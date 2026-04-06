@@ -3,7 +3,7 @@ from tkinter import DISABLED, NORMAL
 
 import os
 import re
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageSequence
 
 try:
     from inventory_ui import InventoryUI
@@ -16,6 +16,22 @@ MENU_WIDTH = 500
 MENU_HEIGHT = int(MENU_WIDTH * ASPECT_RATIO[1] / ASPECT_RATIO[0])
 MENU_OFFSET_X = 300
 MENU_OFFSET_Y = 150
+
+# GIF overlay config
+GIF_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "hola-que-tal-como-va-todo-loco-a.gif")
+GIF_INITIAL_X = 167
+GIF_INITIAL_Y = 5
+GIF_INITIAL_SCALE = 0.53
+GIF_MIN_SCALE = 0.2
+GIF_MAX_SCALE = 3.0
+
+# Josuncio overlay config
+JOSUNCIO_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "josuncio.png")
+JOSUNCIO_INITIAL_X = 5
+JOSUNCIO_INITIAL_Y = 5
+JOSUNCIO_INITIAL_SCALE = 0.53
+JOSUNCIO_MIN_SCALE = 0.2
+JOSUNCIO_MAX_SCALE = 2.5
 
 # button container anchor offset (from top-left of window)
 BUTTON_OFFSET_X = 272
@@ -463,6 +479,129 @@ def main():
         def make_bg_photo(scale: float):
             return None
 
+    gif_frames = []
+    gif_durations = []
+    gif_photo_frames = []
+    gif_item = None
+    gif_running = False
+    gif_current_frame = 0
+
+    josuncio_original = None
+    josuncio_photo = None
+    josuncio_item = None
+
+    if os.path.exists(GIF_IMAGE_PATH):
+        try:
+            gif_source = Image.open(GIF_IMAGE_PATH)
+            for frame in ImageSequence.Iterator(gif_source):
+                gif_frames.append(frame.convert("RGBA"))
+                gif_durations.append(frame.info.get("duration", 100))
+        except Exception as e:
+            print(f"Warning: could not load GIF image: {e}")
+
+    if os.path.exists(JOSUNCIO_IMAGE_PATH):
+        try:
+            josuncio_original = Image.open(JOSUNCIO_IMAGE_PATH).convert("RGBA")
+        except Exception as e:
+            print(f"Warning: could not load Josuncio image: {e}")
+
+    def make_gif_photos(scale: float):
+        photos = []
+        if not gif_frames:
+            return photos
+        if hasattr(Image, "Resampling"):
+            resample_method = Image.Resampling.LANCZOS
+        else:
+            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+        for frame in gif_frames:
+            size = (max(1, int(frame.width * scale)), max(1, int(frame.height * scale)))
+            resized = frame.resize(size, resample_method)
+            photos.append(ImageTk.PhotoImage(resized))
+        root.gif_photo_frames = photos
+        return photos
+
+    def make_josuncio_photo(scale: float):
+        nonlocal josuncio_photo
+        if josuncio_original is None:
+            return None
+        if hasattr(Image, "Resampling"):
+            resample_method = Image.Resampling.LANCZOS
+        else:
+            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+        size = (max(1, int(josuncio_original.width * scale)), max(1, int(josuncio_original.height * scale)))
+        resized = josuncio_original.resize(size, resample_method)
+        josuncio_photo = ImageTk.PhotoImage(resized)
+        root.josuncio_photo = josuncio_photo
+        return josuncio_photo
+
+    def animate_gif_frame(index: int):
+        nonlocal gif_current_frame, gif_running, gif_item
+        if not gif_photo_frames or gif_item is None:
+            gif_running = False
+            return
+        gif_current_frame = index
+        canvas.itemconfigure(gif_item, image=gif_photo_frames[index])
+        if index + 1 < len(gif_photo_frames):
+            gif_running = True
+            delay = gif_durations[index] if index < len(gif_durations) else 100
+            root.after(delay, lambda idx=index + 1: animate_gif_frame(idx))
+        else:
+            gif_running = False
+
+    def start_gif_animation():
+        nonlocal gif_current_frame, gif_running, gif_item
+        if not gif_photo_frames or gif_running:
+            return
+        gif_current_frame = 0
+        animate_gif_frame(0)
+
+    def update_gif_photos():
+        nonlocal gif_photo_frames, gif_item
+        if not gif_frames:
+            return
+        gif_photo_frames = make_gif_photos(gif_scale.get())
+        if not gif_photo_frames:
+            return
+        if gif_item is None:
+            gif_item = canvas.create_image(gif_x.get(), gif_y.get(), anchor="nw", image=gif_photo_frames[0])
+        else:
+            current = min(gif_current_frame, len(gif_photo_frames) - 1)
+            canvas.itemconfigure(gif_item, image=gif_photo_frames[current])
+        canvas.coords(gif_item, gif_x.get(), gif_y.get())
+
+    def update_gif_layout(*args):
+        if gif_item is None and gif_frames:
+            create_gif_overlay()
+            return
+        if gif_item is None:
+            return
+        canvas.coords(gif_item, gif_x.get(), gif_y.get())
+        update_gif_photos()
+
+    def update_josuncio_layout(*args):
+        nonlocal josuncio_item
+        if josuncio_original is None:
+            return
+        photo = make_josuncio_photo(josuncio_scale.get())
+        if photo is None:
+            return
+        if josuncio_item is None:
+            josuncio_item = canvas.create_image(josuncio_x.get(), josuncio_y.get(), anchor="nw", image=photo)
+        else:
+            canvas.itemconfigure(josuncio_item, image=photo)
+            canvas.coords(josuncio_item, josuncio_x.get(), josuncio_y.get())
+
+    def create_gif_overlay():
+        nonlocal gif_item, gif_photo_frames
+        if not gif_frames:
+            return
+        gif_photo_frames = make_gif_photos(gif_scale.get())
+        if not gif_photo_frames:
+            return
+        gif_item = canvas.create_image(gif_x.get(), gif_y.get(), anchor="nw", image=gif_photo_frames[0])
+        root.gif_photo_frames = gif_photo_frames
+        start_gif_animation()
+
     button_x = tk.IntVar(value=BUTTON_OFFSET_X)
     button_y = tk.IntVar(value=BUTTON_OFFSET_Y)
     button_scale = tk.DoubleVar(value=BUTTON_SCALE)
@@ -472,6 +611,12 @@ def main():
     inv_x = tk.IntVar(value=INVENTORY_OFFSET_X)
     inv_y = tk.IntVar(value=INVENTORY_OFFSET_Y)
     inv_scale = tk.DoubleVar(value=INVENTORY_SCALE)
+    gif_x = tk.IntVar(value=GIF_INITIAL_X)
+    gif_y = tk.IntVar(value=GIF_INITIAL_Y)
+    gif_scale = tk.DoubleVar(value=GIF_INITIAL_SCALE)
+    josuncio_x = tk.IntVar(value=JOSUNCIO_INITIAL_X)
+    josuncio_y = tk.IntVar(value=JOSUNCIO_INITIAL_Y)
+    josuncio_scale = tk.DoubleVar(value=JOSUNCIO_INITIAL_SCALE)
 
     button_specs = [
         ("TRAIN", "green"),
@@ -570,8 +715,12 @@ def main():
         update_button_layout()
         update_background()
         update_inventory_layout()
+        update_gif_layout()
+        update_josuncio_layout()
 
     update_button_layout()
+    create_gif_overlay()
+    update_josuncio_layout()
 
     controls = tk.Toplevel(root)
     controls.title("Layout Controls")
@@ -597,6 +746,12 @@ def main():
     make_slider(controls, "Inventory X", inv_x, 0, MENU_WIDTH, resolution=1, row=6)
     make_slider(controls, "Inventory Y", inv_y, 0, MENU_HEIGHT, resolution=1, row=7)
     make_slider(controls, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=8)
+    make_slider(controls, "GIF X", gif_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=9)
+    make_slider(controls, "GIF Y", gif_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=10)
+    make_slider(controls, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=11)
+    make_slider(controls, "Josuncio X", josuncio_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=12)
+    make_slider(controls, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=13)
+    make_slider(controls, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=14)
 
     control_frame = tk.Frame(root, bg="#120f1e")
     control_frame.pack(pady=14)

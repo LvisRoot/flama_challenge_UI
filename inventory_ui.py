@@ -39,11 +39,12 @@ ITEMS = [
 
 
 class InventoryUI:
-    def __init__(self, root: tk.Widget, debug: bool = False, embedded: bool = False, scale: float = 1.0, on_close=None):
+    def __init__(self, root: tk.Widget, debug: bool = False, embedded: bool = False, scale: float = 1.0, item_state: dict | None = None, on_close=None):
         self.root = root
         self.debug = debug
         self.embedded = embedded
         self.scale = max(0.1, float(scale))
+        self.item_state = item_state or {}
         self.on_close = on_close
 
         self.photo_refs = []
@@ -438,8 +439,8 @@ class InventoryUI:
         return "break"
 
     def _on_cross_press(self, event):
-        self._set_cross_scale(0.8)        if self.embedded and callable(self.on_close):
-            self.on_close()        return "break"
+        self._set_cross_scale(0.8)
+        return "break"
 
     def _on_cross_release(self, event):
         self._set_cross_scale(1.0)
