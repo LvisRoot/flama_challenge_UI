@@ -1,9 +1,16 @@
 import tkinter as tk
 from tkinter import DISABLED, NORMAL
 
+import argparse
 import os
 import re
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageSequence
+
+try:
+    import imageio
+    IMAGEIO_AVAILABLE = True
+except ImportError:
+    IMAGEIO_AVAILABLE = False
 
 try:
     from inventory_ui import InventoryUI
@@ -18,20 +25,22 @@ MENU_OFFSET_X = 300
 MENU_OFFSET_Y = 150
 
 # GIF overlay config
-GIF_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "hola-que-tal-como-va-todo-loco-a.gif")
+GIF_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "images")
+GIF_DEFAULT_FILENAME = "hola-que-tal-como-va-todo-loco-a.gif"
 GIF_INITIAL_X = 167
 GIF_INITIAL_Y = 5
 GIF_INITIAL_SCALE = 0.53
-GIF_MIN_SCALE = 0.2
-GIF_MAX_SCALE = 3.0
+GIF_MIN_SCALE = 0.53
+GIF_MAX_SCALE = 1.0
 
 # Josuncio overlay config
-JOSUNCIO_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "josuncio.png")
+JOSUNCIO_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "images", "josuncio")
+JOSUNCIO_DEFAULT_FILENAME = "josuncio.png"
 JOSUNCIO_INITIAL_X = 5
 JOSUNCIO_INITIAL_Y = 5
 JOSUNCIO_INITIAL_SCALE = 0.53
-JOSUNCIO_MIN_SCALE = 0.2
-JOSUNCIO_MAX_SCALE = 2.5
+JOSUNCIO_MIN_SCALE = 0.53
+JOSUNCIO_MAX_SCALE = 1.0
 
 # button container anchor offset (from top-left of window)
 BUTTON_OFFSET_X = 272
@@ -45,13 +54,10 @@ INVENTORY_OFFSET_Y = 104
 INVENTORY_SCALE = 0.7
 INVENTORY_BORDER = 2
 
-# background image config (assets/images/elInvernadero.png)
-BACKGROUND_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "elInvernadero.png")
-BACKGROUND_IMAGE_WIDTH = 520
-BACKGROUND_IMAGE_HEIGHT = 880
-BACKGROUND_IMAGE_X = -29
-BACKGROUND_IMAGE_Y = -78
-BACKGROUND_SCALE = 1.15
+# background asset config
+BACKGROUND_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "assets", "images")
+BACKGROUND_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
+BACKGROUND_DEFAULT_FILENAME = "elInvernadero_crop.png"
 
 
 def make_sprite(label: str, width: int = 360, height: int = 72, outline: int = 3):
@@ -441,7 +447,7 @@ class SpriteButton:
         self.canvas.itemconfigure(self.image_item, image=self.images["normal"] if enabled else self.images["disabled"])
 
 
-def main():
+def main(debug: bool = False):
     root = tk.Tk()
     root.title("Pixel Art Button UI")
     root.configure(bg="#120f1e")
@@ -457,53 +463,195 @@ def main():
 
     bg_original_pil = None
     bg_item = None
-    if os.path.exists(BACKGROUND_IMAGE_PATH):
-        try:
-            bg_original_pil = Image.open(BACKGROUND_IMAGE_PATH).convert("RGBA")
-            if hasattr(Image, "Resampling"):
-                resample_method = Image.Resampling.LANCZOS
-            else:
-                resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+    background_asset_dir = BACKGROUND_IMAGE_DIR
+    background_video_dir = BACKGROUND_VIDEO_DIR
+    background_files = []
+    if os.path.exists(background_asset_dir):
+        background_files += sorted([f for f in os.listdir(background_asset_dir) if f.lower().endswith(".png")])
+    if os.path.exists(background_video_dir):
+        background_files += sorted([f for f in os.listdir(background_video_dir) if f.lower().endswith(".mp4")])
+    background_selected_filename = background_files[0] if background_files else BACKGROUND_DEFAULT_FILENAME
+    background_selected = tk.StringVar(value=background_selected_filename)
+    background_photo = None
+    background_video_reader = None
+    background_video_running = False
+    background_video_delay = 100
+    background_after_id = None
+    gif_after_id = None
+    overlays_visible = True
+    menu_compact = False
 
-            def make_bg_photo(scale: float):
-                size = (max(1, int(BACKGROUND_IMAGE_WIDTH * scale)), max(1, int(BACKGROUND_IMAGE_HEIGHT * scale)))
-                img = bg_original_pil.resize(size, resample_method)
-                return ImageTk.PhotoImage(img)
-
-            bg_photo = make_bg_photo(BACKGROUND_SCALE)
-            bg_item = canvas.create_image(BACKGROUND_IMAGE_X, BACKGROUND_IMAGE_Y, anchor="nw", image=bg_photo)
-            root.bg_photo = bg_photo  # keep reference so image persists
-        except Exception as e:
-            print(f"Warning: could not load background image: {e}")
-    else:
-        def make_bg_photo(scale: float):
+    def background_path_for(filename):
+        if not filename:
             return None
+        if filename.lower().endswith(".png"):
+            return os.path.join(background_asset_dir, filename)
+        if filename.lower().endswith(".mp4"):
+            return os.path.join(background_video_dir, filename)
+        return None
 
+    def make_background_photo(image: Image.Image):
+        if image is None:
+            return None
+        if hasattr(Image, "Resampling"):
+            resample_method = Image.Resampling.LANCZOS
+        else:
+            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+        resized = image.resize((MENU_WIDTH, MENU_HEIGHT), resample_method)
+        photo = ImageTk.PhotoImage(resized)
+        root.background_photo = photo
+        return photo
+
+    def stop_background_video():
+        nonlocal background_video_running, background_video_reader, background_after_id
+        background_video_running = False
+        if background_after_id is not None:
+            try:
+                root.after_cancel(background_after_id)
+            except Exception:
+                pass
+        background_after_id = None
+        if background_video_reader is not None:
+            try:
+                background_video_reader.close()
+            except Exception:
+                pass
+            background_video_reader = None
+
+    def load_background_file(filename):
+        nonlocal bg_original_pil, background_photo, bg_item, background_video_reader, background_video_running, background_video_delay
+        stop_background_video()
+        path = background_path_for(filename)
+        if not path or not os.path.exists(path):
+            return
+        if filename.lower().endswith(".png"):
+            try:
+                bg_original_pil = Image.open(path).convert("RGBA")
+            except Exception as e:
+                print(f"Warning: could not load background image '{filename}': {e}")
+                return
+            photo = make_background_photo(bg_original_pil)
+            if photo is None:
+                return
+            if bg_item is None:
+                bg_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+            else:
+                canvas.itemconfigure(bg_item, image=photo)
+                canvas.coords(bg_item, 0, 0)
+            return
+        if filename.lower().endswith(".mp4"):
+            if not IMAGEIO_AVAILABLE:
+                print("Video support unavailable; install imageio/imageio-ffmpeg in the .venv")
+                return
+            try:
+                reader = imageio.get_reader(path)
+                meta = reader.get_meta_data()
+                # fps = meta.get("fps") or meta.get("fps", 24)
+                fps = 60
+                background_video_delay = int(1000 / fps) if fps else 100
+                frame = reader.get_data(0)
+                background_video_reader = reader
+            except Exception as e:
+                print(f"Warning: could not load background video '{filename}': {e}")
+                background_video_reader = None
+                return
+            bg_original_pil = Image.fromarray(frame)
+            photo = make_background_photo(bg_original_pil)
+            if photo is None:
+                return
+            if bg_item is None:
+                bg_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+            else:
+                canvas.itemconfigure(bg_item, image=photo)
+                canvas.coords(bg_item, 0, 0)
+            return
+
+    def background_video_tick():
+        nonlocal background_video_running, background_video_reader, background_photo, bg_item, background_after_id
+        if not background_video_running or background_video_reader is None:
+            return
+        try:
+            frame = background_video_reader.get_next_data()
+        except Exception:
+            selected = background_selected.get()
+            if background_video_reader is not None:
+                try:
+                    background_video_reader.close()
+                except Exception:
+                    pass
+            background_video_reader = None
+            try:
+                load_background_file(selected)
+            except Exception:
+                background_video_running = False
+                return
+            background_video_running = True
+            background_after_id = root.after(background_video_delay, background_video_tick)
+            return
+        image = Image.fromarray(frame)
+        photo = make_background_photo(image)
+        if photo is None:
+            background_video_running = False
+            return
+        if bg_item is not None:
+            canvas.itemconfigure(bg_item, image=photo)
+        background_after_id = root.after(background_video_delay, background_video_tick)
+
+    def play_background():
+        nonlocal background_video_running
+        selected = background_selected.get()
+        if selected.lower().endswith(".mp4"):
+            if not IMAGEIO_AVAILABLE:
+                print("Video support unavailable; install imageio/imageio-ffmpeg in the .venv")
+                return
+            stop_background_video()
+            load_background_file(selected)
+            if background_video_reader is None:
+                return
+            background_video_running = True
+            background_video_tick()
+        else:
+            load_background_file(selected)
+
+    if background_selected_filename:
+        load_background_file(background_selected_filename)
+
+    gif_asset_dir = GIF_ASSET_DIR
+    gif_files = sorted([f for f in os.listdir(gif_asset_dir) if f.lower().endswith(".gif")])
     gif_frames = []
     gif_durations = []
     gif_photo_frames = []
     gif_item = None
     gif_running = False
     gif_current_frame = 0
+    gif_selected_filename = gif_files[0] if gif_files else GIF_DEFAULT_FILENAME
+    gif_selected = tk.StringVar(value=gif_selected_filename)
+    gif_x = tk.IntVar(value=GIF_INITIAL_X)
+    gif_y = tk.IntVar(value=GIF_INITIAL_Y)
+    gif_scale = tk.DoubleVar(value=GIF_INITIAL_SCALE)
 
+    josuncio_asset_dir = JOSUNCIO_ASSET_DIR
+    josuncio_files = sorted([f for f in os.listdir(josuncio_asset_dir) if f.lower().endswith(".png")])
     josuncio_original = None
     josuncio_photo = None
     josuncio_item = None
+    josuncio_selected_filename = josuncio_files[0] if josuncio_files else JOSUNCIO_DEFAULT_FILENAME
+    josuncio_selected = tk.StringVar(value=josuncio_selected_filename)
+    josuncio_x = tk.IntVar(value=JOSUNCIO_INITIAL_X)
+    josuncio_y = tk.IntVar(value=JOSUNCIO_INITIAL_Y)
+    josuncio_scale = tk.DoubleVar(value=JOSUNCIO_INITIAL_SCALE)
 
-    if os.path.exists(GIF_IMAGE_PATH):
-        try:
-            gif_source = Image.open(GIF_IMAGE_PATH)
-            for frame in ImageSequence.Iterator(gif_source):
-                gif_frames.append(frame.convert("RGBA"))
-                gif_durations.append(frame.info.get("duration", 100))
-        except Exception as e:
-            print(f"Warning: could not load GIF image: {e}")
+    def gif_path_for(filename):
+        return os.path.join(gif_asset_dir, filename) if filename else None
 
-    if os.path.exists(JOSUNCIO_IMAGE_PATH):
+    def josuncio_path_for(filename):
+        return os.path.join(josuncio_asset_dir, filename) if filename else None
+
+    if josuncio_selected_filename:
         try:
-            josuncio_original = Image.open(JOSUNCIO_IMAGE_PATH).convert("RGBA")
+            josuncio_original = Image.open(josuncio_path_for(josuncio_selected_filename)).convert("RGBA")
         except Exception as e:
-            print(f"Warning: could not load Josuncio image: {e}")
+            print(f"Warning: could not load Josuncio image '{josuncio_selected_filename}': {e}")
 
     def make_gif_photos(scale: float):
         photos = []
@@ -535,24 +683,36 @@ def main():
         return josuncio_photo
 
     def animate_gif_frame(index: int):
-        nonlocal gif_current_frame, gif_running, gif_item
+        nonlocal gif_current_frame, gif_running, gif_item, gif_after_id
         if not gif_photo_frames or gif_item is None:
             gif_running = False
+            gif_after_id = None
             return
         gif_current_frame = index
         canvas.itemconfigure(gif_item, image=gif_photo_frames[index])
         if index + 1 < len(gif_photo_frames):
             gif_running = True
             delay = gif_durations[index] if index < len(gif_durations) else 100
-            root.after(delay, lambda idx=index + 1: animate_gif_frame(idx))
+            gif_after_id = root.after(delay, lambda idx=index + 1: animate_gif_frame(idx))
         else:
             gif_running = False
+            gif_after_id = None
 
     def start_gif_animation():
-        nonlocal gif_current_frame, gif_running, gif_item
-        if not gif_photo_frames or gif_running:
+        nonlocal gif_current_frame, gif_running, gif_item, gif_after_id
+        if not gif_photo_frames:
             return
+        if gif_after_id is not None:
+            try:
+                root.after_cancel(gif_after_id)
+            except Exception:
+                pass
+            gif_after_id = None
+        gif_running = True
         gif_current_frame = 0
+        if gif_item is None:
+            create_gif_overlay()
+            return
         animate_gif_frame(0)
 
     def update_gif_photos():
@@ -568,6 +728,28 @@ def main():
             current = min(gif_current_frame, len(gif_photo_frames) - 1)
             canvas.itemconfigure(gif_item, image=gif_photo_frames[current])
         canvas.coords(gif_item, gif_x.get(), gif_y.get())
+
+    def load_gif_file(filename):
+        nonlocal gif_frames, gif_durations, gif_photo_frames, gif_current_frame, gif_running
+        gif_frames = []
+        gif_durations = []
+        gif_photo_frames = []
+        gif_current_frame = 0
+        gif_running = False
+        path = gif_path_for(filename)
+        if not path or not os.path.exists(path):
+            return
+        try:
+            gif_source = Image.open(path)
+            for frame in ImageSequence.Iterator(gif_source):
+                gif_frames.append(frame.convert("RGBA"))
+                gif_durations.append(frame.info.get("duration", 100))
+        except Exception as e:
+            print(f"Warning: could not load GIF image '{filename}': {e}")
+        update_gif_photos()
+
+    if gif_selected_filename:
+        load_gif_file(gif_selected_filename)
 
     def update_gif_layout(*args):
         if gif_item is None and gif_frames:
@@ -590,6 +772,24 @@ def main():
         else:
             canvas.itemconfigure(josuncio_item, image=photo)
             canvas.coords(josuncio_item, josuncio_x.get(), josuncio_y.get())
+        if not overlays_visible:
+            canvas.itemconfigure(josuncio_item, state="hidden")
+
+    def load_josuncio_file(filename):
+        nonlocal josuncio_original, josuncio_photo, josuncio_item
+        path = josuncio_path_for(filename)
+        josuncio_original = None
+        josuncio_photo = None
+        if not path or not os.path.exists(path):
+            return
+        try:
+            josuncio_original = Image.open(path).convert("RGBA")
+        except Exception as e:
+            print(f"Warning: could not load Josuncio image '{filename}': {e}")
+        if josuncio_item is not None:
+            photo = make_josuncio_photo(josuncio_scale.get())
+            if photo is not None:
+                canvas.itemconfigure(josuncio_item, image=photo)
 
     def create_gif_overlay():
         nonlocal gif_item, gif_photo_frames
@@ -598,16 +798,20 @@ def main():
         gif_photo_frames = make_gif_photos(gif_scale.get())
         if not gif_photo_frames:
             return
-        gif_item = canvas.create_image(gif_x.get(), gif_y.get(), anchor="nw", image=gif_photo_frames[0])
+        if gif_item is None:
+            gif_item = canvas.create_image(gif_x.get(), gif_y.get(), anchor="nw", image=gif_photo_frames[0])
+        else:
+            canvas.itemconfigure(gif_item, image=gif_photo_frames[0])
         root.gif_photo_frames = gif_photo_frames
+        if overlays_visible:
+            canvas.itemconfigure(gif_item, state="normal")
+        else:
+            canvas.itemconfigure(gif_item, state="hidden")
         start_gif_animation()
 
     button_x = tk.IntVar(value=BUTTON_OFFSET_X)
     button_y = tk.IntVar(value=BUTTON_OFFSET_Y)
     button_scale = tk.DoubleVar(value=BUTTON_SCALE)
-    bg_x = tk.IntVar(value=BACKGROUND_IMAGE_X)
-    bg_y = tk.IntVar(value=BACKGROUND_IMAGE_Y)
-    bg_scale = tk.DoubleVar(value=BACKGROUND_SCALE)
     inv_x = tk.IntVar(value=INVENTORY_OFFSET_X)
     inv_y = tk.IntVar(value=INVENTORY_OFFSET_Y)
     inv_scale = tk.DoubleVar(value=INVENTORY_SCALE)
@@ -693,23 +897,48 @@ def main():
             command=lambda l=label: on_button_click(l),
             scale=button_scale.get(),
         )
+        btn.label = label
         buttons.append(btn)
 
     def update_button_layout(*args):
         x = button_x.get()
+        if menu_compact:
+            inventory_button = None
+            for btn in buttons:
+                if getattr(btn, "label", "") == "INVENTORY":
+                    inventory_button = btn
+                else:
+                    canvas.itemconfigure(btn.image_item, state="hidden")
+            if inventory_button is not None:
+                inventory_button.update_scale(button_scale.get())
+                bottom_y = button_y.get() + (len(buttons) - 1) * (inventory_button.height + int(BUTTON_VERTICAL_SPACING * button_scale.get()))
+                canvas.coords(inventory_button.image_item, x, bottom_y)
+                canvas.itemconfigure(inventory_button.image_item, state="normal")
+            return
         y = button_y.get()
         for btn in buttons:
             btn.update_scale(button_scale.get())
             canvas.coords(btn.image_item, x, y)
+            canvas.itemconfigure(btn.image_item, state="normal")
             y += btn.height + int(BUTTON_VERTICAL_SPACING * button_scale.get())
 
     def update_background(*args):
-        if bg_item is None or bg_original_pil is None:
-            return
-        photo = make_bg_photo(bg_scale.get())
-        canvas.itemconfigure(bg_item, image=photo)
-        canvas.coords(bg_item, bg_x.get(), bg_y.get())
-        root.bg_photo = photo
+        selected = background_selected.get()
+        if selected.lower().endswith(".png"):
+            load_background_file(selected)
+
+    def toggle_overlays():
+        nonlocal overlays_visible
+        overlays_visible = not overlays_visible
+        if gif_item is not None:
+            canvas.itemconfigure(gif_item, state="normal" if overlays_visible else "hidden")
+        if josuncio_item is not None:
+            canvas.itemconfigure(josuncio_item, state="normal" if overlays_visible else "hidden")
+
+    def toggle_menu_mode():
+        nonlocal menu_compact
+        menu_compact = not menu_compact
+        update_button_layout()
 
     def update_all(*args):
         update_button_layout()
@@ -737,24 +966,72 @@ def main():
         return scale
 
     controls.columnconfigure(1, weight=1)
-    make_slider(controls, "Buttons X", button_x, 0, MENU_WIDTH, resolution=1, row=0)
-    make_slider(controls, "Buttons Y", button_y, 0, MENU_HEIGHT, resolution=1, row=1)
-    make_slider(controls, "Button Scale", button_scale, 0.3, 2.0, resolution=0.05, row=2)
-    make_slider(controls, "BG X", bg_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=3)
-    make_slider(controls, "BG Y", bg_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=4)
-    make_slider(controls, "BG Scale", bg_scale, 0.5, 2.0, resolution=0.05, row=5)
-    make_slider(controls, "Inventory X", inv_x, 0, MENU_WIDTH, resolution=1, row=6)
-    make_slider(controls, "Inventory Y", inv_y, 0, MENU_HEIGHT, resolution=1, row=7)
-    make_slider(controls, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=8)
-    make_slider(controls, "GIF X", gif_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=9)
-    make_slider(controls, "GIF Y", gif_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=10)
-    make_slider(controls, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=11)
-    make_slider(controls, "Josuncio X", josuncio_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=12)
-    make_slider(controls, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=13)
-    make_slider(controls, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=14)
+    row_index = 0
+    if debug:
+        make_slider(controls, "Buttons X", button_x, 0, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Buttons Y", button_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Button Scale", button_scale, 0.3, 2.0, resolution=0.05, row=row_index)
+        row_index += 1
+        make_slider(controls, "Inventory X", inv_x, 0, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Inventory Y", inv_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=row_index)
+        row_index += 1
 
-    control_frame = tk.Frame(root, bg="#120f1e")
-    control_frame.pack(pady=14)
+    tk.Label(controls, text="Background Source", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
+    background_dropdown = tk.OptionMenu(controls, background_selected, *background_files, command=lambda _: load_background_file(background_selected.get()))
+    background_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
+    row_index += 1
+    play_background_button = tk.Button(controls, text="Play Background", command=play_background)
+    play_background_button.grid(row=row_index, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
+    row_index += 1
+    tk.Label(controls, text="Select GIF", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
+    gif_dropdown = tk.OptionMenu(controls, gif_selected, *gif_files, command=lambda _: load_gif_file(gif_selected.get()))
+    gif_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
+    row_index += 1
+    if debug:
+        make_slider(controls, "GIF X", gif_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "GIF Y", gif_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=row_index)
+        row_index += 1
+    play_gif_button = tk.Button(controls, text="Play GIF", command=start_gif_animation)
+    play_gif_button.grid(row=row_index, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
+    row_index += 1
+    tk.Label(controls, text="Josuncio Image", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
+    josuncio_dropdown = tk.OptionMenu(controls, josuncio_selected, *josuncio_files, command=lambda _: load_josuncio_file(josuncio_selected.get()))
+    josuncio_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
+    row_index += 1
+    if debug:
+        make_slider(controls, "Josuncio X", josuncio_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=row_index)
+        row_index += 1
+
+    toggle_frame = tk.Frame(controls, bg="#120f1e")
+    toggle_frame.grid(row=row_index, column=0, columnspan=2, pady=12)
+    tk.Button(
+        toggle_frame,
+        text="Toggle Overlays",
+        command=toggle_overlays,
+        font=("PixeloidSans", 10),
+        padx=10,
+        pady=5,
+    ).grid(row=0, column=0, padx=10)
+    tk.Button(
+        toggle_frame,
+        text="Toggle Menu",
+        command=toggle_menu_mode,
+        font=("PixeloidSans", 10),
+        padx=10,
+        pady=5,
+    ).grid(row=0, column=1, padx=10)
 
     def disable_all():
         for b in buttons:
@@ -786,4 +1063,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Pixel art UI with optional debug controls")
+    parser.add_argument("--debug", action="store_true", help="show slider controls")
+    args = parser.parse_args()
+    main(debug=args.debug)
