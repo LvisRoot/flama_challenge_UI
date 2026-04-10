@@ -24,6 +24,11 @@ try:
 except ImportError:
     SelectionMenuUI = None
 
+try:
+    from action_menu_ui import ActionMenuUI
+except ImportError:
+    ActionMenuUI = None
+
 # Layout constants (adjust menu geometry and initial position)
 ASPECT_RATIO = (9, 16)
 MENU_WIDTH = 500
@@ -52,9 +57,9 @@ JOSUNCIO_MAX_SCALE = 1.0
 # claucho transparent video overlay config
 CLAUCHO_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "claucho")
 CLAUCHO_CHROMA_COLOR = "0x00D800"
-CLAUCHO_INITIAL_X = 0
-CLAUCHO_INITIAL_Y = 0
-CLAUCHO_INITIAL_SCALE = 1.0
+CLAUCHO_INITIAL_X = -80
+CLAUCHO_INITIAL_Y = 224
+CLAUCHO_INITIAL_SCALE = 1.4
 CLAUCHO_MIN_SCALE = 0.3
 CLAUCHO_MAX_SCALE = 2.0
 
@@ -76,6 +81,14 @@ SELECTION_OVERLAY_INITIAL_Y = 150
 SELECTION_OVERLAY_INITIAL_SCALE = 0.45
 SELECTION_OVERLAY_MIN_SCALE = 0.2
 SELECTION_OVERLAY_MAX_SCALE = 1.0
+
+# action menu overlay config
+ACTION_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "actions")
+ACTION_MENU_INITIAL_X = 279
+ACTION_MENU_INITIAL_Y = 519
+ACTION_MENU_INITIAL_SCALE = 0.3
+ACTION_MENU_MIN_SCALE = 0.2
+ACTION_MENU_MAX_SCALE = 1.0
 
 # background asset config
 BACKGROUND_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "assets", "images")
@@ -1124,6 +1137,10 @@ def main(debug: bool = False):
     selection_x = tk.IntVar(value=SELECTION_OVERLAY_INITIAL_X)
     selection_y = tk.IntVar(value=SELECTION_OVERLAY_INITIAL_Y)
     selection_scale = tk.DoubleVar(value=SELECTION_OVERLAY_INITIAL_SCALE)
+    action_x = tk.IntVar(value=ACTION_MENU_INITIAL_X)
+    action_y = tk.IntVar(value=ACTION_MENU_INITIAL_Y)
+    action_scale = tk.DoubleVar(value=ACTION_MENU_INITIAL_SCALE)
+    action_selected = tk.StringVar(value="None")
     gif_x = tk.IntVar(value=GIF_INITIAL_X)
     gif_y = tk.IntVar(value=GIF_INITIAL_Y)
     gif_scale = tk.DoubleVar(value=GIF_INITIAL_SCALE)
@@ -1143,6 +1160,46 @@ def main(debug: bool = False):
     inventory_view = None
     inventory_state = {}
     selection_overlay = None
+    action_overlay = None
+
+    def clear_action():
+        nonlocal action_overlay
+        action_overlay = None
+
+    def close_action():
+        nonlocal action_overlay
+        if action_overlay is not None:
+            overlay = action_overlay
+            action_overlay = None
+            overlay.close()
+
+    def open_action_menu(menu_name):
+        nonlocal action_overlay
+        if ActionMenuUI is None:
+            print("ActionMenuUI module not available")
+            return
+        close_action()
+        action_overlay = ActionMenuUI(
+            canvas,
+            ACTION_ASSET_DIR,
+            menu_name,
+            x=action_x.get(),
+            y=action_y.get(),
+            scale=action_scale.get(),
+            on_close=clear_action,
+        )
+
+    def on_action_selected(*args):
+        choice = action_selected.get()
+        if choice == "None":
+            close_action()
+        else:
+            open_action_menu(choice)
+
+    def update_action_layout(*args):
+        if action_overlay is None:
+            return
+        action_overlay.set_transform(action_x.get(), action_y.get(), action_scale.get())
 
     def rebuild_inventory():
         nonlocal inventory_frame, inventory_view, inventory_state
@@ -1307,6 +1364,7 @@ def main(debug: bool = False):
         update_background()
         update_inventory_layout()
         update_selection_layout()
+        update_action_layout()
         update_claucho_layout()
         update_gif_layout()
         update_josuncio_layout()
@@ -1321,6 +1379,16 @@ def main(debug: bool = False):
     controls.title("Layout Controls")
     controls.geometry(f"+{MENU_OFFSET_X + MENU_WIDTH + 12}+{MENU_OFFSET_Y}")
 
+    # Two-column layout: left_col and right_col side by side
+    left_col = tk.Frame(controls)
+    left_col.grid(row=0, column=0, sticky="nsew", padx=(4, 2))
+    right_col = tk.Frame(controls)
+    right_col.grid(row=0, column=1, sticky="nsew", padx=(2, 4))
+    controls.columnconfigure(0, weight=1)
+    controls.columnconfigure(1, weight=1)
+    left_col.columnconfigure(1, weight=1)
+    right_col.columnconfigure(1, weight=1)
+
     def make_slider(parent, label_text, variable, from_, to_, resolution=1, row=0, callback=True):
         tk.Label(parent, text=label_text, anchor="w").grid(row=row, column=0, sticky="w", padx=8, pady=4)
         if callback:
@@ -1331,87 +1399,103 @@ def main(debug: bool = False):
         scale.grid(row=row, column=1, sticky="ew", padx=8)
         return scale
 
-    controls.columnconfigure(1, weight=1)
-    row_index = 0
+    # ── LEFT COLUMN: Buttons, Inventory, Menu, Background, Claucho ──
+    lr = 0
     if debug:
-        make_slider(controls, "Buttons X", button_x, 0, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Buttons Y", button_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Button Scale", button_scale, 0.3, 2.0, resolution=0.05, row=row_index)
-        row_index += 1
-        make_slider(controls, "Inventory X", inv_x, 0, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Inventory Y", inv_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=row_index)
-        row_index += 1
-        make_slider(controls, "Menu X", selection_x, 0, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Menu Y", selection_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Menu Scale", selection_scale, SELECTION_OVERLAY_MIN_SCALE, SELECTION_OVERLAY_MAX_SCALE, resolution=0.05, row=row_index)
-        row_index += 1
+        make_slider(left_col, "Buttons X", button_x, 0, MENU_WIDTH, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Buttons Y", button_y, 0, MENU_HEIGHT, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Button Scale", button_scale, 0.3, 2.0, resolution=0.05, row=lr)
+        lr += 1
+        make_slider(left_col, "Inventory X", inv_x, 0, MENU_WIDTH, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Inventory Y", inv_y, 0, MENU_HEIGHT, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=lr)
+        lr += 1
+        make_slider(left_col, "Menu X", selection_x, 0, MENU_WIDTH, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Menu Y", selection_y, 0, MENU_HEIGHT, resolution=1, row=lr)
+        lr += 1
+        make_slider(left_col, "Menu Scale", selection_scale, SELECTION_OVERLAY_MIN_SCALE, SELECTION_OVERLAY_MAX_SCALE, resolution=0.05, row=lr)
+        lr += 1
 
-    tk.Label(controls, text="Background Source", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
-    background_dropdown = tk.OptionMenu(controls, background_selected, *background_files, command=lambda _: load_background_file(background_selected.get()))
-    background_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
-    row_index += 1
-    play_background_button = tk.Button(controls, text="Play Background", command=play_background)
-    play_background_button.grid(row=row_index, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
-    row_index += 1
+    tk.Label(left_col, text="Background Source", anchor="w").grid(row=lr, column=0, sticky="w", padx=8, pady=4)
+    background_dropdown = tk.OptionMenu(left_col, background_selected, *background_files, command=lambda _: load_background_file(background_selected.get()))
+    background_dropdown.grid(row=lr, column=1, sticky="ew", padx=8)
+    lr += 1
+    play_background_button = tk.Button(left_col, text="Play Background", command=play_background)
+    play_background_button.grid(row=lr, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
+    lr += 1
     if claucho_files:
-        tk.Label(controls, text="Claucho Video", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
-        claucho_dropdown = tk.OptionMenu(controls, claucho_selected, *claucho_files, command=lambda _: load_claucho_video(claucho_selected.get()))
-        claucho_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
-        row_index += 1
+        tk.Label(left_col, text="Claucho Video", anchor="w").grid(row=lr, column=0, sticky="w", padx=8, pady=4)
+        claucho_dropdown = tk.OptionMenu(left_col, claucho_selected, *claucho_files, command=lambda _: load_claucho_video(claucho_selected.get()))
+        claucho_dropdown.grid(row=lr, column=1, sticky="ew", padx=8)
+        lr += 1
         if debug:
-            make_slider(controls, "Claucho X", claucho_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
-            row_index += 1
-            make_slider(controls, "Claucho Y", claucho_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
-            row_index += 1
-            make_slider(controls, "Claucho Scale", claucho_scale, CLAUCHO_MIN_SCALE, CLAUCHO_MAX_SCALE, resolution=0.05, row=row_index)
-            row_index += 1
-    tk.Label(controls, text="Select GIF", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
-    gif_dropdown = tk.OptionMenu(controls, gif_selected, *gif_files, command=lambda _: load_gif_file(gif_selected.get()))
-    gif_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
-    row_index += 1
-    if debug:
-        make_slider(controls, "GIF X", gif_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "GIF Y", gif_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=row_index)
-        row_index += 1
-    play_gif_button = tk.Button(controls, text="Play GIF", command=start_gif_animation)
-    play_gif_button.grid(row=row_index, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
-    row_index += 1
-    tk.Label(controls, text="Josuncio Image", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
-    josuncio_dropdown = tk.OptionMenu(controls, josuncio_selected, *josuncio_files, command=lambda _: load_josuncio_file(josuncio_selected.get()))
-    josuncio_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
-    row_index += 1
-    if debug:
-        make_slider(controls, "Josuncio X", josuncio_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=row_index)
-        row_index += 1
+            make_slider(left_col, "Claucho X", claucho_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=lr)
+            lr += 1
+            make_slider(left_col, "Claucho Y", claucho_y, 0, MENU_HEIGHT, resolution=1, row=lr)
+            lr += 1
+            make_slider(left_col, "Claucho Scale", claucho_scale, CLAUCHO_MIN_SCALE, CLAUCHO_MAX_SCALE, resolution=0.05, row=lr)
+            lr += 1
 
-    tk.Label(controls, text="Money Amount", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
-    money_entry = tk.Entry(controls, textvariable=money_amount)
-    money_entry.grid(row=row_index, column=1, sticky="ew", padx=8)
-    row_index += 1
+    # ── RIGHT COLUMN: GIF, Josuncio, Action, Money, Toggles ──
+    rr = 0
+    tk.Label(right_col, text="Select GIF", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
+    gif_dropdown = tk.OptionMenu(right_col, gif_selected, *gif_files, command=lambda _: load_gif_file(gif_selected.get()))
+    gif_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
+    rr += 1
     if debug:
-        make_slider(controls, "Money X", money_x, 0, MENU_WIDTH, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Money Y", money_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
-        row_index += 1
-        make_slider(controls, "Money Scale", money_scale, MONEY_MIN_SCALE, MONEY_MAX_SCALE, resolution=0.05, row=row_index)
-        row_index += 1
+        make_slider(right_col, "GIF X", gif_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "GIF Y", gif_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=rr)
+        rr += 1
+    play_gif_button = tk.Button(right_col, text="Play GIF", command=start_gif_animation)
+    play_gif_button.grid(row=rr, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
+    rr += 1
+    tk.Label(right_col, text="Josuncio Image", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
+    josuncio_dropdown = tk.OptionMenu(right_col, josuncio_selected, *josuncio_files, command=lambda _: load_josuncio_file(josuncio_selected.get()))
+    josuncio_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
+    rr += 1
+    if debug:
+        make_slider(right_col, "Josuncio X", josuncio_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=rr)
+        rr += 1
 
-    toggle_frame = tk.Frame(controls, bg="#120f1e")
-    toggle_frame.grid(row=row_index, column=0, columnspan=2, pady=12)
+    tk.Label(right_col, text="Action Menu", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
+    action_menu_choices = ["None", "walkMenu.png", "tricksMenu.png"]
+    action_dropdown = tk.OptionMenu(right_col, action_selected, *action_menu_choices, command=lambda _: on_action_selected())
+    action_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
+    rr += 1
+    if debug:
+        make_slider(right_col, "Action X", action_x, 0, MENU_WIDTH, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Action Y", action_y, 0, MENU_HEIGHT, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Action Scale", action_scale, ACTION_MENU_MIN_SCALE, ACTION_MENU_MAX_SCALE, resolution=0.05, row=rr)
+        rr += 1
+
+    tk.Label(right_col, text="Money Amount", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
+    money_entry = tk.Entry(right_col, textvariable=money_amount)
+    money_entry.grid(row=rr, column=1, sticky="ew", padx=8)
+    rr += 1
+    if debug:
+        make_slider(right_col, "Money X", money_x, 0, MENU_WIDTH, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Money Y", money_y, 0, MENU_HEIGHT, resolution=1, row=rr)
+        rr += 1
+        make_slider(right_col, "Money Scale", money_scale, MONEY_MIN_SCALE, MONEY_MAX_SCALE, resolution=0.05, row=rr)
+        rr += 1
+
+    toggle_frame = tk.Frame(controls)
+    toggle_frame.grid(row=1, column=0, columnspan=2, pady=12)
     tk.Button(
         toggle_frame,
         text="Toggle Overlays",
