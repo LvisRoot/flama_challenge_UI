@@ -2,8 +2,10 @@ import tkinter as tk
 from tkinter import DISABLED, NORMAL
 
 import argparse
+import json
 import os
 import re
+import subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageSequence
 
 try:
@@ -16,6 +18,11 @@ try:
     from inventory_ui import InventoryUI
 except ImportError:
     InventoryUI = None
+
+try:
+    from selection_menu_ui import SelectionMenuUI
+except ImportError:
+    SelectionMenuUI = None
 
 # Layout constants (adjust menu geometry and initial position)
 ASPECT_RATIO = (9, 16)
@@ -42,9 +49,18 @@ JOSUNCIO_INITIAL_SCALE = 0.53
 JOSUNCIO_MIN_SCALE = 0.53
 JOSUNCIO_MAX_SCALE = 1.0
 
+# claucho transparent video overlay config
+CLAUCHO_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "claucho")
+CLAUCHO_CHROMA_COLOR = "0x00D800"
+CLAUCHO_INITIAL_X = 0
+CLAUCHO_INITIAL_Y = 0
+CLAUCHO_INITIAL_SCALE = 1.0
+CLAUCHO_MIN_SCALE = 0.3
+CLAUCHO_MAX_SCALE = 2.0
+
 # button container anchor offset (from top-left of window)
 BUTTON_OFFSET_X = 272
-BUTTON_OFFSET_Y = 535
+BUTTON_OFFSET_Y = 490
 BUTTON_VERTICAL_SPACING = 12
 BUTTON_SCALE = 0.45
 
@@ -54,10 +70,23 @@ INVENTORY_OFFSET_Y = 104
 INVENTORY_SCALE = 0.7
 INVENTORY_BORDER = 2
 
+# selection overlay config
+SELECTION_OVERLAY_INITIAL_X = 22
+SELECTION_OVERLAY_INITIAL_Y = 150
+SELECTION_OVERLAY_INITIAL_SCALE = 0.45
+SELECTION_OVERLAY_MIN_SCALE = 0.2
+SELECTION_OVERLAY_MAX_SCALE = 1.0
+
 # background asset config
 BACKGROUND_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "assets", "images")
 BACKGROUND_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 BACKGROUND_DEFAULT_FILENAME = "elInvernadero_crop.png"
+MONEY_INDICATOR_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "money_indicator.png")
+MONEY_INITIAL_X = 331
+MONEY_INITIAL_Y = 835
+MONEY_INITIAL_SCALE = 0.4
+MONEY_MIN_SCALE = 0.2
+MONEY_MAX_SCALE = 1.0
 
 
 def make_sprite(label: str, width: int = 360, height: int = 72, outline: int = 3):
@@ -465,6 +494,7 @@ def main(debug: bool = False):
     bg_item = None
     background_asset_dir = BACKGROUND_IMAGE_DIR
     background_video_dir = BACKGROUND_VIDEO_DIR
+    claucho_video_dir = CLAUCHO_VIDEO_DIR
     background_files = []
     if os.path.exists(background_asset_dir):
         background_files += sorted([f for f in os.listdir(background_asset_dir) if f.lower().endswith(".png")])
@@ -478,8 +508,34 @@ def main(debug: bool = False):
     background_video_delay = 100
     background_after_id = None
     gif_after_id = None
+    claucho_files = sorted([f for f in os.listdir(claucho_video_dir) if f.lower().endswith(".mp4")]) if os.path.exists(claucho_video_dir) else []
+    claucho_selected_filename = claucho_files[0] if claucho_files else ""
+    claucho_selected = tk.StringVar(value=claucho_selected_filename)
+    claucho_process = None
+    claucho_width = None
+    claucho_height = None
+    claucho_frame_size = None
+    claucho_video_running = False
+    claucho_video_delay = 100
+    claucho_after_id = None
+    claucho_photo = None
+    claucho_item = None
+    claucho_last_frame = None
+    claucho_has_alpha = False
+    claucho_x = tk.IntVar(value=CLAUCHO_INITIAL_X)
+    claucho_y = tk.IntVar(value=CLAUCHO_INITIAL_Y)
+    claucho_scale = tk.DoubleVar(value=CLAUCHO_INITIAL_SCALE)
     overlays_visible = True
     menu_compact = False
+    money_x = tk.IntVar(value=MONEY_INITIAL_X)
+    money_y = tk.IntVar(value=MONEY_INITIAL_Y)
+    money_scale = tk.DoubleVar(value=MONEY_INITIAL_SCALE)
+    money_amount = tk.StringVar(value="100")
+    money_original = None
+    money_photo = None
+    money_item = None
+    money_text_item = None
+    money_font = ("PressStart2P", 14)
 
     def background_path_for(filename):
         if not filename:
@@ -490,7 +546,201 @@ def main(debug: bool = False):
             return os.path.join(background_video_dir, filename)
         return None
 
-    def make_background_photo(image: Image.Image):
+    def claucho_path_for(filename):
+        return os.path.join(claucho_video_dir, filename) if filename else None
+
+    def make_claucho_photo(image: Image.Image, scale: float = 1.0):
+        if image is None:
+            return None
+        image = image.convert("RGBA")
+        width, height = image.size
+        if hasattr(Image, "Resampling"):
+            resample_method = Image.Resampling.LANCZOS
+        else:
+            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+        target_width = max(1, int(width * scale))
+        target_height = max(1, int(height * scale))
+        resized = image.resize((target_width, target_height), resample_method)
+        # Composite onto background for proper alpha transparency in tkinter
+        if bg_original_pil is not None:
+            bg_resized = bg_original_pil.resize((MENU_WIDTH, MENU_HEIGHT), resample_method)
+            composite = bg_resized.copy()
+            cx, cy = claucho_x.get(), claucho_y.get()
+            composite.alpha_composite(resized, (cx, cy))
+            photo = ImageTk.PhotoImage(composite)
+        else:
+            photo = ImageTk.PhotoImage(resized)
+        root.claucho_photo = photo
+        return photo
+
+    def probe_video_info(path):
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height,avg_frame_rate,tags",
+                    "-of",
+                    "json",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            data = json.loads(result.stdout)
+            stream = data["streams"][0]
+            width = int(stream["width"])
+            height = int(stream["height"])
+            fps = 30.0
+            avg_frame_rate = stream.get("avg_frame_rate", "0/1")
+            if avg_frame_rate and avg_frame_rate != "0/0":
+                nums = avg_frame_rate.split("/")
+                if len(nums) == 2 and int(nums[1]) != 0:
+                    fps = float(nums[0]) / float(nums[1])
+            alpha_mode = False
+            tags = stream.get("tags") or {}
+            if tags.get("alpha_mode") in {"1", "yes", "true"}:
+                alpha_mode = True
+            return width, height, fps, alpha_mode
+        except Exception:
+            return None, None, None, False
+
+    def open_claucho_process(path):
+        nonlocal claucho_process, claucho_width, claucho_height, claucho_frame_size, claucho_video_delay, claucho_has_alpha
+        if claucho_process is not None:
+            try:
+                claucho_process.kill()
+                claucho_process.wait()
+            except Exception:
+                pass
+            claucho_process = None
+        width, height, fps, alpha_mode = probe_video_info(path)
+        claucho_width = width
+        claucho_height = height
+        if fps and fps > 0:
+            claucho_video_delay = int(1000 / fps)
+        claucho_has_alpha = alpha_mode
+        if not claucho_width or not claucho_height:
+            print(f"Warning: could not determine claucho video size for '{path}'")
+            return
+        claucho_frame_size = claucho_width * claucho_height * 4
+        claucho_process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-stream_loop",
+                "-1",
+                "-i",
+                path,
+                "-vf",
+                f"chromakey={CLAUCHO_CHROMA_COLOR}:0.12:0.18,format=rgba",
+                "-pix_fmt",
+                "rgba",
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def read_claucho_frame():
+        if claucho_process is None or claucho_frame_size is None:
+            return None
+        try:
+            data = claucho_process.stdout.read(claucho_frame_size)
+            if not data or len(data) != claucho_frame_size:
+                return None
+            image = Image.frombuffer("RGBA", (claucho_width, claucho_height), data, "raw", "RGBA", 0, 1)
+            return image.copy()
+        except Exception:
+            return None
+
+    def pause_claucho_video():
+        nonlocal claucho_video_running, claucho_after_id
+        claucho_video_running = False
+        if claucho_after_id is not None:
+            try:
+                root.after_cancel(claucho_after_id)
+            except Exception:
+                pass
+        claucho_after_id = None
+        if claucho_item is not None:
+            canvas.itemconfigure(claucho_item, state="hidden")
+
+    def stop_claucho_video():
+        nonlocal claucho_process
+        pause_claucho_video()
+        if claucho_process is not None:
+            try:
+                claucho_process.kill()
+                claucho_process.wait()
+            except Exception:
+                pass
+        claucho_process = None
+
+    def resume_claucho_video_if_ready():
+        nonlocal claucho_video_running
+        if not claucho_selected.get() or claucho_process is None:
+            return
+        if background_selected.get().lower().endswith(".mp4"):
+            pause_claucho_video()
+            return
+        if claucho_item is not None:
+            canvas.itemconfigure(claucho_item, state="normal")
+        if not claucho_video_running:
+            claucho_video_running = True
+            claucho_video_tick()
+
+    def load_claucho_video(filename):
+        nonlocal claucho_item, claucho_photo, claucho_last_frame
+        stop_claucho_video()
+        path = claucho_path_for(filename)
+        if not path or not os.path.exists(path):
+            return
+        open_claucho_process(path)
+        if claucho_process is None:
+            return
+        claucho_last_frame = read_claucho_frame()
+        if claucho_last_frame is None:
+            return
+        photo = make_claucho_photo(claucho_last_frame, claucho_scale.get())
+        if photo is None:
+            return
+        if claucho_item is None:
+            claucho_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+        else:
+            canvas.itemconfigure(claucho_item, image=photo)
+            canvas.coords(claucho_item, 0, 0)
+        if bg_item is not None:
+            canvas.tag_raise(claucho_item, bg_item)
+        resume_claucho_video_if_ready()
+
+    def claucho_video_tick():
+        nonlocal claucho_video_running, claucho_photo, claucho_item, claucho_after_id, claucho_last_frame
+        if not claucho_video_running or claucho_process is None:
+            return
+        claucho_last_frame = read_claucho_frame()
+        if claucho_last_frame is None:
+            stop_claucho_video()
+            load_claucho_video(claucho_selected.get())
+            return
+        photo = make_claucho_photo(claucho_last_frame, claucho_scale.get())
+        if photo is None:
+            claucho_video_running = False
+            return
+        if claucho_item is not None:
+            canvas.itemconfigure(claucho_item, image=photo)
+            canvas.coords(claucho_item, 0, 0)
+        claucho_after_id = root.after(claucho_video_delay, claucho_video_tick)
+
+    def make_background_photo(image: Image.Image, *, video: bool = False):
         if image is None:
             return None
         if hasattr(Image, "Resampling"):
@@ -538,6 +788,7 @@ def main(debug: bool = False):
             else:
                 canvas.itemconfigure(bg_item, image=photo)
                 canvas.coords(bg_item, 0, 0)
+            resume_claucho_video_if_ready()
             return
         if filename.lower().endswith(".mp4"):
             if not IMAGEIO_AVAILABLE:
@@ -546,7 +797,6 @@ def main(debug: bool = False):
             try:
                 reader = imageio.get_reader(path)
                 meta = reader.get_meta_data()
-                # fps = meta.get("fps") or meta.get("fps", 24)
                 fps = 60
                 background_video_delay = int(1000 / fps) if fps else 100
                 frame = reader.get_data(0)
@@ -564,6 +814,7 @@ def main(debug: bool = False):
             else:
                 canvas.itemconfigure(bg_item, image=photo)
                 canvas.coords(bg_item, 0, 0)
+            pause_claucho_video()
             return
 
     def background_video_tick():
@@ -595,6 +846,7 @@ def main(debug: bool = False):
             return
         if bg_item is not None:
             canvas.itemconfigure(bg_item, image=photo)
+            canvas.coords(bg_item, 0, 0)
         background_after_id = root.after(background_video_delay, background_video_tick)
 
     def play_background():
@@ -615,6 +867,8 @@ def main(debug: bool = False):
 
     if background_selected_filename:
         load_background_file(background_selected_filename)
+    if claucho_selected_filename:
+        load_claucho_video(claucho_selected_filename)
 
     gif_asset_dir = GIF_ASSET_DIR
     gif_files = sorted([f for f in os.listdir(gif_asset_dir) if f.lower().endswith(".gif")])
@@ -791,6 +1045,58 @@ def main(debug: bool = False):
             if photo is not None:
                 canvas.itemconfigure(josuncio_item, image=photo)
 
+    def make_money_photo(scale: float):
+        nonlocal money_photo
+        if money_original is None:
+            return None
+        if hasattr(Image, "Resampling"):
+            resample_method = Image.Resampling.LANCZOS
+        else:
+            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+        size = (
+            max(1, int(money_original.width * scale)),
+            max(1, int(money_original.height * scale)),
+        )
+        resized = money_original.resize(size, resample_method)
+        money_photo = ImageTk.PhotoImage(resized)
+        root.money_photo = money_photo
+        return money_photo
+
+    def update_money_layout(*args):
+        nonlocal money_item, money_photo, money_text_item
+        if money_original is None:
+            return
+        photo = make_money_photo(money_scale.get())
+        if photo is None:
+            return
+        if money_item is None:
+            money_item = canvas.create_image(money_x.get(), money_y.get(), anchor="nw", image=photo)
+        else:
+            canvas.itemconfigure(money_item, image=photo)
+            canvas.coords(money_item, money_x.get(), money_y.get())
+        text_x = money_x.get() + photo.width() // 2
+        text_y = money_y.get() + photo.height() // 2
+        if money_text_item is None:
+            money_text_item = canvas.create_text(
+                text_x,
+                text_y,
+                text=money_amount.get(),
+                fill="yellow",
+                font=money_font,
+                anchor="center",
+            )
+        else:
+            canvas.coords(money_text_item, text_x, text_y)
+            canvas.itemconfigure(money_text_item, text=money_amount.get())
+
+    if os.path.exists(MONEY_INDICATOR_PATH):
+        try:
+            money_original = Image.open(MONEY_INDICATOR_PATH).convert("RGBA")
+        except Exception as e:
+            print(f"Warning: could not load money indicator: {e}")
+
+    money_amount.trace_add("write", lambda *args: update_money_layout())
+
     def create_gif_overlay():
         nonlocal gif_item, gif_photo_frames
         if not gif_frames:
@@ -815,6 +1121,9 @@ def main(debug: bool = False):
     inv_x = tk.IntVar(value=INVENTORY_OFFSET_X)
     inv_y = tk.IntVar(value=INVENTORY_OFFSET_Y)
     inv_scale = tk.DoubleVar(value=INVENTORY_SCALE)
+    selection_x = tk.IntVar(value=SELECTION_OVERLAY_INITIAL_X)
+    selection_y = tk.IntVar(value=SELECTION_OVERLAY_INITIAL_Y)
+    selection_scale = tk.DoubleVar(value=SELECTION_OVERLAY_INITIAL_SCALE)
     gif_x = tk.IntVar(value=GIF_INITIAL_X)
     gif_y = tk.IntVar(value=GIF_INITIAL_Y)
     gif_scale = tk.DoubleVar(value=GIF_INITIAL_SCALE)
@@ -833,6 +1142,7 @@ def main(debug: bool = False):
     inventory_frame = None
     inventory_view = None
     inventory_state = {}
+    selection_overlay = None
 
     def rebuild_inventory():
         nonlocal inventory_frame, inventory_view, inventory_state
@@ -875,6 +1185,52 @@ def main(debug: bool = False):
         if float(inv_scale.get()) != inventory_view.scale:
             rebuild_inventory()
 
+    def update_selection_layout(*args):
+        if selection_overlay is None:
+            return
+        selection_overlay.set_transform(selection_x.get(), selection_y.get(), selection_scale.get())
+
+    def update_claucho_layout(*args):
+        nonlocal claucho_photo
+        if claucho_item is None or claucho_last_frame is None:
+            return
+        photo = make_claucho_photo(claucho_last_frame, claucho_scale.get())
+        if photo is None:
+            return
+        claucho_photo = photo
+        canvas.itemconfigure(claucho_item, image=photo)
+        canvas.coords(claucho_item, 0, 0)
+
+    def clear_selection():
+        nonlocal selection_overlay
+        selection_overlay = None
+
+    def close_selection():
+        nonlocal selection_overlay
+        if selection_overlay is not None:
+            overlay = selection_overlay
+            selection_overlay = None
+            overlay.close()
+
+    def open_selection(asset_dir, title):
+        nonlocal selection_overlay
+        if SelectionMenuUI is None:
+            print("SelectionMenuUI module not available")
+            return
+        if selection_overlay is not None:
+            selection_overlay.lift()
+            return
+        selection_overlay = SelectionMenuUI(
+            root,
+            asset_dir,
+            title,
+            embedded=True,
+            x=SELECTION_OVERLAY_INITIAL_X,
+            y=SELECTION_OVERLAY_INITIAL_Y,
+            scale=SELECTION_OVERLAY_INITIAL_SCALE,
+            on_close=clear_selection,
+        )
+
     def on_button_click(label: str):
         if label == "INVENTORY":
             if InventoryUI is None:
@@ -884,6 +1240,12 @@ def main(debug: bool = False):
                 rebuild_inventory()
             else:
                 inventory_frame.lift()
+            return
+        if label == "JOIN CLUB":
+            open_selection(os.path.join(os.path.dirname(__file__), "assets", "images", "clubs"), "Join Club")
+            return
+        if label == "BUY GEAR":
+            open_selection(os.path.join(os.path.dirname(__file__), "assets", "images", "shop"), "Shop")
             return
         print(f"Clicked {label}")
 
@@ -944,12 +1306,16 @@ def main(debug: bool = False):
         update_button_layout()
         update_background()
         update_inventory_layout()
+        update_selection_layout()
+        update_claucho_layout()
         update_gif_layout()
         update_josuncio_layout()
+        update_money_layout()
 
     update_button_layout()
     create_gif_overlay()
     update_josuncio_layout()
+    update_money_layout()
 
     controls = tk.Toplevel(root)
     controls.title("Layout Controls")
@@ -980,6 +1346,12 @@ def main(debug: bool = False):
         row_index += 1
         make_slider(controls, "Inventory Scale", inv_scale, 0.3, 1.5, resolution=0.05, row=row_index)
         row_index += 1
+        make_slider(controls, "Menu X", selection_x, 0, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Menu Y", selection_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Menu Scale", selection_scale, SELECTION_OVERLAY_MIN_SCALE, SELECTION_OVERLAY_MAX_SCALE, resolution=0.05, row=row_index)
+        row_index += 1
 
     tk.Label(controls, text="Background Source", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
     background_dropdown = tk.OptionMenu(controls, background_selected, *background_files, command=lambda _: load_background_file(background_selected.get()))
@@ -988,6 +1360,18 @@ def main(debug: bool = False):
     play_background_button = tk.Button(controls, text="Play Background", command=play_background)
     play_background_button.grid(row=row_index, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
     row_index += 1
+    if claucho_files:
+        tk.Label(controls, text="Claucho Video", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
+        claucho_dropdown = tk.OptionMenu(controls, claucho_selected, *claucho_files, command=lambda _: load_claucho_video(claucho_selected.get()))
+        claucho_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
+        row_index += 1
+        if debug:
+            make_slider(controls, "Claucho X", claucho_x, -MENU_WIDTH, MENU_WIDTH, resolution=1, row=row_index)
+            row_index += 1
+            make_slider(controls, "Claucho Y", claucho_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
+            row_index += 1
+            make_slider(controls, "Claucho Scale", claucho_scale, CLAUCHO_MIN_SCALE, CLAUCHO_MAX_SCALE, resolution=0.05, row=row_index)
+            row_index += 1
     tk.Label(controls, text="Select GIF", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
     gif_dropdown = tk.OptionMenu(controls, gif_selected, *gif_files, command=lambda _: load_gif_file(gif_selected.get()))
     gif_dropdown.grid(row=row_index, column=1, sticky="ew", padx=8)
@@ -1012,6 +1396,18 @@ def main(debug: bool = False):
         make_slider(controls, "Josuncio Y", josuncio_y, -MENU_HEIGHT, MENU_HEIGHT, resolution=1, row=row_index)
         row_index += 1
         make_slider(controls, "Josuncio Scale", josuncio_scale, JOSUNCIO_MIN_SCALE, JOSUNCIO_MAX_SCALE, resolution=0.05, row=row_index)
+        row_index += 1
+
+    tk.Label(controls, text="Money Amount", anchor="w").grid(row=row_index, column=0, sticky="w", padx=8, pady=4)
+    money_entry = tk.Entry(controls, textvariable=money_amount)
+    money_entry.grid(row=row_index, column=1, sticky="ew", padx=8)
+    row_index += 1
+    if debug:
+        make_slider(controls, "Money X", money_x, 0, MENU_WIDTH, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Money Y", money_y, 0, MENU_HEIGHT, resolution=1, row=row_index)
+        row_index += 1
+        make_slider(controls, "Money Scale", money_scale, MONEY_MIN_SCALE, MONEY_MAX_SCALE, resolution=0.05, row=row_index)
         row_index += 1
 
     toggle_frame = tk.Frame(controls, bg="#120f1e")
