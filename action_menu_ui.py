@@ -2,6 +2,8 @@ import os
 import tkinter as tk
 from PIL import Image, ImageOps, ImageTk
 
+from sound_player import play_click_sound
+
 
 class ActionMenuUI:
     """Overlay that composites action arrow buttons onto a parent canvas with transparency."""
@@ -154,6 +156,7 @@ class ActionMenuUI:
             self.item_data.append({"hit_id": hit_id, "index": index})
 
     def _on_press(self, index):
+        play_click_sound()
         self.redraw(pressed_index=index)
 
     def _on_release(self, index):

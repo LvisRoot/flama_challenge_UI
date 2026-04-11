@@ -2,9 +2,12 @@ import os
 import tkinter as tk
 from PIL import Image, ImageOps, ImageTk
 
+from sound_player import play_click_sound, play_error_sound, play_result_sound
+
 
 class SelectionMenuUI:
-    def __init__(self, master, asset_dir, title, embedded=False, x=120, y=120, scale=1.0, on_close=None):
+    def __init__(self, master, asset_dir, title, embedded=False, x=120, y=120, scale=1.0, on_close=None, on_error=None):
+        self.on_error = on_error
         self.master = master
         self.asset_dir = asset_dir
         self.title = title
@@ -136,7 +139,7 @@ class SelectionMenuUI:
             anchor="ne",
             tags=("close",),
         )
-        self.canvas.tag_bind("close", "<Button-1>", lambda event: self.close())
+        self.canvas.tag_bind("close", "<Button-1>", lambda event: (play_click_sound(), self.close()))
 
     def close(self):
         if self.embedded and isinstance(self.window, tk.Frame):
@@ -197,18 +200,27 @@ class SelectionMenuUI:
                 Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS,
             )
             hover_photo = ImageTk.PhotoImage(hover_image)
+            pressed_image = ImageOps.contain(
+                item_image,
+                (slot_width, slot_height),
+                Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS,
+            )
+            pressed_photo = ImageTk.PhotoImage(pressed_image)
             cx = (slot[0] + slot[2]) // 2
             cy = (slot[1] + slot[3]) // 2
             item_id = self.canvas.create_image(cx, cy, image=base_photo, anchor="center")
             self.canvas.tag_bind(item_id, "<Enter>", lambda e, iid=item_id: self.on_item_enter(iid))
             self.canvas.tag_bind(item_id, "<Leave>", lambda e, iid=item_id: self.on_item_leave(iid))
-            self.canvas.tag_bind(item_id, "<Button-1>", lambda e, ipath=path: self.on_item_click(ipath))
+            self.canvas.tag_bind(item_id, "<ButtonPress-1>", lambda e, iid=item_id: self.on_item_press(iid))
+            self.canvas.tag_bind(item_id, "<ButtonRelease-1>", lambda e, iid=item_id, ipath=path: self.on_item_release(iid, ipath))
             self.item_data.append(
                 {
                     "id": item_id,
                     "base_photo": base_photo,
                     "hover_photo": hover_photo,
+                    "pressed_photo": pressed_photo,
                     "slot_center": (cx, cy),
+                    "slot_box": slot,
                     "item_path": path,
                 }
             )
@@ -229,9 +241,34 @@ class SelectionMenuUI:
                 self.canvas.itemconfigure(item_id, image=item["base_photo"])
                 break
 
+    def on_item_press(self, item_id):
+        if self.showing_result:
+            return
+        for item in self.item_data:
+            if item["id"] == item_id:
+                self.canvas.itemconfigure(item_id, image=item["pressed_photo"])
+                break
+
+    def on_item_release(self, item_id, path):
+        if self.showing_result:
+            return
+        for item in self.item_data:
+            if item["id"] == item_id:
+                self.canvas.itemconfigure(item_id, image=item["base_photo"])
+                break
+        self.on_item_click(path)
+
     def on_item_click(self, path):
+        if self.title == "Shop" and os.path.basename(path).lower() != "3_egg.png":
+            play_error_sound()
+            self._flash_error(path)
+            if callable(self.on_error):
+                self.on_error()
+            return
+        play_click_sound()
         if self.result_image is None:
             return
+        play_result_sound()
         self.showing_result = True
         self.canvas.delete("all")
         result_width = int(self.result_image.width * self.menu_scale)
@@ -254,5 +291,22 @@ class SelectionMenuUI:
 
     def on_result_click(self, event):
         if event.x >= self.canvas.winfo_width() - 80 and event.y <= 80:
+            play_click_sound()
             self.close()
+
+    def _flash_error(self, path):
+        for item in self.item_data:
+            if item["item_path"] == path:
+                slot = item["slot_box"]
+                red_id = self.canvas.create_rectangle(
+                    slot[0],
+                    slot[1],
+                    slot[2],
+                    slot[3],
+                    fill="#ff0000",
+                    outline="",
+                )
+                self.canvas.tag_lower(red_id, item["id"])
+                self.canvas.after(200, lambda rid=red_id: self.canvas.delete(rid))
+                return
 

@@ -8,6 +8,8 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+from sound_player import play_click_sound
+
 DEFAULT_WIDTH = 560
 DEFAULT_HEIGHT = 660
 SLOT_SIZE = 92
@@ -428,6 +430,7 @@ class InventoryUI:
         self._show_cancel_for_slot(slot_id, scale=scale)
 
     def _on_cancel_click(self, event):
+        play_click_sound()
         slot_id = self._find_slot_for_point(event.x, event.y)
         if slot_id is None:
             return "break"
@@ -439,6 +442,7 @@ class InventoryUI:
         return "break"
 
     def _on_cross_press(self, event):
+        play_click_sound()
         self._set_cross_scale(0.8)
         return "break"
 
@@ -483,6 +487,7 @@ class InventoryUI:
             self.drag_state["orig_slot"] = None
 
     def _on_press(self, event):
+        play_click_sound()
         if self._click_on_cancel(event):
             slot_id = self._find_slot_for_point(event.x, event.y)
             if slot_id is not None:

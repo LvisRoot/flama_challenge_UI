@@ -8,6 +8,9 @@ import re
 import subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageSequence
 
+import sound_player
+from sound_player import play_click_sound
+
 try:
     import imageio
     IMAGEIO_AVAILABLE = True
@@ -57,9 +60,9 @@ JOSUNCIO_MAX_SCALE = 1.0
 # claucho transparent video overlay config
 CLAUCHO_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "claucho")
 CLAUCHO_CHROMA_COLOR = "0x00D800"
-CLAUCHO_INITIAL_X = -80
-CLAUCHO_INITIAL_Y = 224
-CLAUCHO_INITIAL_SCALE = 1.4
+CLAUCHO_INITIAL_X = -58
+CLAUCHO_INITIAL_Y = 66
+CLAUCHO_INITIAL_SCALE = 1.75
 CLAUCHO_MIN_SCALE = 0.3
 CLAUCHO_MAX_SCALE = 2.0
 
@@ -473,6 +476,7 @@ class SpriteButton:
     def on_press(self, event):
         if not self.enabled:
             return
+        play_click_sound()
         self.pressed = True
         self.canvas.itemconfigure(self.image_item, image=self.images["pressed"])
 
@@ -549,6 +553,7 @@ def main(debug: bool = False):
     money_item = None
     money_text_item = None
     money_font = ("PressStart2P", 14)
+    money_flash_after_id = None
 
     def background_path_for(filename):
         if not filename:
@@ -1110,6 +1115,23 @@ def main(debug: bool = False):
 
     money_amount.trace_add("write", lambda *args: update_money_layout())
 
+    def flash_money_error():
+        nonlocal money_flash_after_id
+        if money_text_item is None:
+            return
+        canvas.itemconfigure(money_text_item, fill="red")
+        if money_flash_after_id is not None:
+            try:
+                root.after_cancel(money_flash_after_id)
+            except Exception:
+                pass
+        def restore():
+            nonlocal money_flash_after_id
+            if money_text_item is not None:
+                canvas.itemconfigure(money_text_item, fill="yellow")
+            money_flash_after_id = None
+        money_flash_after_id = root.after(200, restore)
+
     def create_gif_overlay():
         nonlocal gif_item, gif_photo_frames
         if not gif_frames:
@@ -1286,6 +1308,7 @@ def main(debug: bool = False):
             y=SELECTION_OVERLAY_INITIAL_Y,
             scale=SELECTION_OVERLAY_INITIAL_SCALE,
             on_close=clear_selection,
+            on_error=flash_money_error if title == "Shop" else None,
         )
 
     def on_button_click(label: str):
@@ -1423,14 +1446,16 @@ def main(debug: bool = False):
 
     tk.Label(left_col, text="Background Source", anchor="w").grid(row=lr, column=0, sticky="w", padx=8, pady=4)
     background_dropdown = tk.OptionMenu(left_col, background_selected, *background_files, command=lambda _: load_background_file(background_selected.get()))
+    sound_player.disable_sound(background_dropdown)
     background_dropdown.grid(row=lr, column=1, sticky="ew", padx=8)
     lr += 1
-    play_background_button = tk.Button(left_col, text="Play Background", command=play_background)
+    play_background_button = tk.Button(left_col, text="Play Background", command=play_background, sound_disabled=True)
     play_background_button.grid(row=lr, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
     lr += 1
     if claucho_files:
         tk.Label(left_col, text="Claucho Video", anchor="w").grid(row=lr, column=0, sticky="w", padx=8, pady=4)
         claucho_dropdown = tk.OptionMenu(left_col, claucho_selected, *claucho_files, command=lambda _: load_claucho_video(claucho_selected.get()))
+        sound_player.disable_sound(claucho_dropdown)
         claucho_dropdown.grid(row=lr, column=1, sticky="ew", padx=8)
         lr += 1
         if debug:
@@ -1445,6 +1470,7 @@ def main(debug: bool = False):
     rr = 0
     tk.Label(right_col, text="Select GIF", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
     gif_dropdown = tk.OptionMenu(right_col, gif_selected, *gif_files, command=lambda _: load_gif_file(gif_selected.get()))
+    sound_player.disable_sound(gif_dropdown)
     gif_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
     rr += 1
     if debug:
@@ -1454,11 +1480,12 @@ def main(debug: bool = False):
         rr += 1
         make_slider(right_col, "GIF Scale", gif_scale, GIF_MIN_SCALE, GIF_MAX_SCALE, resolution=0.05, row=rr)
         rr += 1
-    play_gif_button = tk.Button(right_col, text="Play GIF", command=start_gif_animation)
+    play_gif_button = tk.Button(right_col, text="Play GIF", command=start_gif_animation, sound_disabled=True)
     play_gif_button.grid(row=rr, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 12))
     rr += 1
     tk.Label(right_col, text="Josuncio Image", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
     josuncio_dropdown = tk.OptionMenu(right_col, josuncio_selected, *josuncio_files, command=lambda _: load_josuncio_file(josuncio_selected.get()))
+    sound_player.disable_sound(josuncio_dropdown)
     josuncio_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
     rr += 1
     if debug:
@@ -1472,6 +1499,7 @@ def main(debug: bool = False):
     tk.Label(right_col, text="Action Menu", anchor="w").grid(row=rr, column=0, sticky="w", padx=8, pady=4)
     action_menu_choices = ["None", "walkMenu.png", "tricksMenu.png"]
     action_dropdown = tk.OptionMenu(right_col, action_selected, *action_menu_choices, command=lambda _: on_action_selected())
+    sound_player.disable_sound(action_dropdown)
     action_dropdown.grid(row=rr, column=1, sticky="ew", padx=8)
     rr += 1
     if debug:
@@ -1503,6 +1531,7 @@ def main(debug: bool = False):
         font=("PixeloidSans", 10),
         padx=10,
         pady=5,
+        sound_disabled=True,
     ).grid(row=0, column=0, padx=10)
     tk.Button(
         toggle_frame,
@@ -1511,6 +1540,7 @@ def main(debug: bool = False):
         font=("PixeloidSans", 10),
         padx=10,
         pady=5,
+        sound_disabled=True,
     ).grid(row=0, column=1, padx=10)
 
     def disable_all():
