@@ -289,6 +289,29 @@ class SelectionMenuUI:
         self.draw_close_button(result_width)
         self.canvas.tag_bind(self.result_item, "<Button-1>", self.on_result_click)
 
+    def show_result(self):
+        if self.result_image is None:
+            return
+        self.showing_result = True
+        self.canvas.delete("all")
+        result_width = int(self.result_image.width * self.menu_scale)
+        result_height = int(self.result_image.height * self.menu_scale)
+        result_photo = ImageTk.PhotoImage(
+            self.result_image.resize(
+                (max(1, result_width), max(1, result_height)),
+                Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS,
+            )
+        )
+        self.result_photo = result_photo
+        self.canvas.config(width=result_width, height=result_height)
+        if self.embedded and isinstance(self.window, tk.Frame):
+            self.window.place_configure(width=result_width, height=result_height)
+        else:
+            self.window.geometry(f"{result_width}x{result_height}+{self.menu_x}+{self.menu_y}")
+        self.result_item = self.canvas.create_image(result_width // 2, result_height // 2, image=self.result_photo, anchor="center")
+        self.draw_close_button(result_width)
+        self.canvas.tag_bind(self.result_item, "<Button-1>", self.on_result_click)
+
     def on_result_click(self, event):
         if event.x >= self.canvas.winfo_width() - 80 and event.y <= 80:
             play_click_sound()

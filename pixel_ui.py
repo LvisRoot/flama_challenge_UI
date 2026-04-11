@@ -9,7 +9,7 @@ import subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageSequence
 
 import sound_player
-from sound_player import play_click_sound
+from sound_player import play_click_sound, play_result_sound
 
 try:
     import imageio
@@ -97,6 +97,7 @@ ACTION_MENU_MAX_SCALE = 1.0
 BACKGROUND_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "assets", "images")
 BACKGROUND_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "assets", "videos")
 BACKGROUND_DEFAULT_FILENAME = "elInvernadero_crop.png"
+TRAIN_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets", "images", "train")
 MONEY_INDICATOR_PATH = os.path.join(os.path.dirname(__file__), "assets", "images", "money_indicator.png")
 MONEY_INITIAL_X = 331
 MONEY_INITIAL_Y = 835
@@ -508,6 +509,7 @@ def main(debug: bool = False):
     canvas.pack(fill='both', expand=True)
 
     bg_original_pil = None
+    bg_resized_cache = None
     bg_item = None
     background_asset_dir = BACKGROUND_IMAGE_DIR
     background_video_dir = BACKGROUND_VIDEO_DIR
@@ -524,6 +526,7 @@ def main(debug: bool = False):
     background_video_running = False
     background_video_delay = 100
     background_after_id = None
+    training_result_overlay = None
     gif_after_id = None
     claucho_files = sorted([f for f in os.listdir(claucho_video_dir) if f.lower().endswith(".mp4")]) if os.path.exists(claucho_video_dir) else []
     claucho_selected_filename = claucho_files[0] if claucho_files else ""
@@ -564,30 +567,58 @@ def main(debug: bool = False):
             return os.path.join(background_video_dir, filename)
         return None
 
+    def is_training_video(filename):
+        if not filename:
+            return False
+        return os.path.splitext(filename)[0].lower().endswith("training")
+
+    def clear_training_result_overlay():
+        nonlocal training_result_overlay
+        if training_result_overlay is not None:
+            training_result_overlay.close()
+            training_result_overlay = None
+
+    def show_training_result_overlay():
+        nonlocal training_result_overlay
+        if SelectionMenuUI is None:
+            print("SelectionMenuUI module not available")
+            return
+        if training_result_overlay is not None:
+            training_result_overlay.close()
+            training_result_overlay = None
+        training_result_overlay = SelectionMenuUI(
+            root,
+            TRAIN_ASSET_DIR,
+            "Training Result",
+            embedded=True,
+            x=SELECTION_OVERLAY_INITIAL_X,
+            y=SELECTION_OVERLAY_INITIAL_Y,
+            scale=SELECTION_OVERLAY_INITIAL_SCALE,
+            on_close=clear_training_result_overlay,
+        )
+        training_result_overlay.show_result()
+        play_result_sound()
+        training_result_overlay.lift()
+
     def claucho_path_for(filename):
         return os.path.join(claucho_video_dir, filename) if filename else None
 
     def make_claucho_photo(image: Image.Image, scale: float = 1.0):
         if image is None:
             return None
-        image = image.convert("RGBA")
-        width, height = image.size
-        if hasattr(Image, "Resampling"):
-            resample_method = Image.Resampling.LANCZOS
-        else:
-            resample_method = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
-        target_width = max(1, int(width * scale))
-        target_height = max(1, int(height * scale))
-        resized = image.resize((target_width, target_height), resample_method)
-        # Composite onto background for proper alpha transparency in tkinter
-        if bg_original_pil is not None:
-            bg_resized = bg_original_pil.resize((MENU_WIDTH, MENU_HEIGHT), resample_method)
-            composite = bg_resized.copy()
+        if scale != 1.0:
+            width, height = image.size
+            target_width = max(1, int(width * scale))
+            target_height = max(1, int(height * scale))
+            image = image.resize((target_width, target_height), Image.BILINEAR)
+        # Composite onto cached background for proper alpha transparency in tkinter
+        if bg_resized_cache is not None:
+            composite = bg_resized_cache.copy()
             cx, cy = claucho_x.get(), claucho_y.get()
-            composite.alpha_composite(resized, (cx, cy))
+            composite.alpha_composite(image, (cx, cy))
             photo = ImageTk.PhotoImage(composite)
         else:
-            photo = ImageTk.PhotoImage(resized)
+            photo = ImageTk.PhotoImage(image)
         root.claucho_photo = photo
         return photo
 
@@ -614,12 +645,7 @@ def main(debug: bool = False):
             stream = data["streams"][0]
             width = int(stream["width"])
             height = int(stream["height"])
-            fps = 30.0
-            avg_frame_rate = stream.get("avg_frame_rate", "0/1")
-            if avg_frame_rate and avg_frame_rate != "0/0":
-                nums = avg_frame_rate.split("/")
-                if len(nums) == 2 and int(nums[1]) != 0:
-                    fps = float(nums[0]) / float(nums[1])
+            fps=60
             alpha_mode = False
             tags = stream.get("tags") or {}
             if tags.get("alpha_mode") in {"1", "yes", "true"}:
@@ -675,8 +701,7 @@ def main(debug: bool = False):
             data = claucho_process.stdout.read(claucho_frame_size)
             if not data or len(data) != claucho_frame_size:
                 return None
-            image = Image.frombuffer("RGBA", (claucho_width, claucho_height), data, "raw", "RGBA", 0, 1)
-            return image.copy()
+            return Image.frombuffer("RGBA", (claucho_width, claucho_height), data, "raw", "RGBA", 0, 1)
         except Exception:
             return None
 
@@ -787,8 +812,9 @@ def main(debug: bool = False):
             background_video_reader = None
 
     def load_background_file(filename):
-        nonlocal bg_original_pil, background_photo, bg_item, background_video_reader, background_video_running, background_video_delay
+        nonlocal bg_original_pil, bg_resized_cache, background_photo, bg_item, background_video_reader, background_video_running, background_video_delay
         stop_background_video()
+        clear_training_result_overlay()
         path = background_path_for(filename)
         if not path or not os.path.exists(path):
             return
@@ -798,6 +824,11 @@ def main(debug: bool = False):
             except Exception as e:
                 print(f"Warning: could not load background image '{filename}': {e}")
                 return
+            if hasattr(Image, "Resampling"):
+                _resample = Image.Resampling.LANCZOS
+            else:
+                _resample = Image.LANCZOS if hasattr(Image, "LANCZOS") else Image.BICUBIC
+            bg_resized_cache = bg_original_pil.resize((MENU_WIDTH, MENU_HEIGHT), _resample)
             photo = make_background_photo(bg_original_pil)
             if photo is None:
                 return
@@ -824,6 +855,7 @@ def main(debug: bool = False):
                 background_video_reader = None
                 return
             bg_original_pil = Image.fromarray(frame)
+            bg_resized_cache = bg_original_pil.resize((MENU_WIDTH, MENU_HEIGHT), Image.BILINEAR)
             photo = make_background_photo(bg_original_pil)
             if photo is None:
                 return
@@ -849,6 +881,10 @@ def main(debug: bool = False):
                 except Exception:
                     pass
             background_video_reader = None
+            if is_training_video(selected):
+                background_video_running = False
+                show_training_result_overlay()
+                return
             try:
                 load_background_file(selected)
             except Exception:
