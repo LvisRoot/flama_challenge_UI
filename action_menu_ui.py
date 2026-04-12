@@ -24,6 +24,7 @@ class ActionMenuUI:
         self.item_data = []    # canvas item info
         self.canvas_items = [] # all canvas item ids we own
         self.bg_item = None
+        self.pressed_directions = set()
 
         self.load_assets()
         self.redraw()
@@ -93,6 +94,31 @@ class ActionMenuUI:
             return []
         return [tuple(int(coord * scale) for coord in box) for box in self.slot_boxes]
 
+    def _direction_index(self, direction):
+        direction = direction.lower()
+        for index, filename in enumerate(self.item_paths):
+            if f"_{direction}_arrow" in filename.lower():
+                return index
+        return None
+
+    def press_direction(self, direction):
+        direction = direction.lower()
+        if direction in self.pressed_directions:
+            return
+        index = self._direction_index(direction)
+        if index is not None:
+            self.pressed_directions.add(direction)
+            self._on_press(index, play_sound=False)
+
+    def release_direction(self, direction):
+        direction = direction.lower()
+        if direction not in self.pressed_directions:
+            return
+        index = self._direction_index(direction)
+        if index is not None:
+            self.pressed_directions.discard(direction)
+            self._on_release(index)
+
     def _composite_image(self, pressed_index=-1):
         """Build a single RGBA composite of background + arrow buttons."""
         resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
@@ -155,8 +181,9 @@ class ActionMenuUI:
             self.canvas.tag_bind(hit_id, "<ButtonRelease-1>", lambda e, idx=index: self._on_release(idx))
             self.item_data.append({"hit_id": hit_id, "index": index})
 
-    def _on_press(self, index):
-        play_click_sound()
+    def _on_press(self, index, play_sound=True):
+        if play_sound:
+            play_click_sound()
         self.redraw(pressed_index=index)
 
     def _on_release(self, index):

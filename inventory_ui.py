@@ -41,13 +41,14 @@ ITEMS = [
 
 
 class InventoryUI:
-    def __init__(self, root: tk.Widget, debug: bool = False, embedded: bool = False, scale: float = 1.0, item_state: dict | None = None, on_close=None):
+    def __init__(self, root: tk.Widget, debug: bool = False, embedded: bool = False, scale: float = 1.0, item_state: dict | None = None, on_close=None, on_drop=None):
         self.root = root
         self.debug = debug
         self.embedded = embedded
         self.scale = max(0.1, float(scale))
         self.item_state = item_state or {}
         self.on_close = on_close
+        self.on_drop = on_drop
 
         self.photo_refs = []
         self.slots = {}
@@ -290,25 +291,55 @@ class InventoryUI:
         if overlay is not None:
             boxes = self._detect_slots_from_overlay(overlay)
             slot_assignments = self._map_overlay_slots(boxes)
+
+        debug_slot_names = iter([
+            "chest",
+            "waist",
+            "legs",
+            "storage_1",
+            "storage_2",
+            "storage_3",
+        ])
+
         if slot_assignments is not None:
             for slot_id, box in slot_assignments.items():
                 x1, y1, x2, y2 = self._scale_box(box)
+                slot_name = next(debug_slot_names, slot_id)
                 self.slots[slot_id] = {
                     "bbox": (x1, y1, x2, y2),
                     "center": ((x1 + x2) / 2, (y1 + y2) / 2),
+                    "debug_name": slot_name,
                 }
                 if self.debug:
                     self.canvas.create_rectangle(x1, y1, x2, y2, fill="", outline="white", width=2)
+                    self.canvas.create_text(
+                        (x1 + x2) / 2,
+                        (y1 + y2) / 2,
+                        text=slot_name,
+                        fill="white",
+                        font=("Arial", max(8, int(10 * self.scale)), "bold"),
+                        anchor="center",
+                    )
             return
 
         for slot_id, x_ratio, y_ratio in CHARACTER_SLOTS + STORAGE_SLOTS:
             cx, cy, x1, y1, x2, y2 = self._slot_coordinates(x_ratio, y_ratio)
+            slot_name = next(debug_slot_names, slot_id)
             self.slots[slot_id] = {
                 "bbox": (x1, y1, x2, y2),
                 "center": (cx, cy),
+                "debug_name": slot_name,
             }
             if self.debug:
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill="", outline="white", width=2)
+                self.canvas.create_text(
+                    cx,
+                    cy,
+                    text=slot_name,
+                    fill="white",
+                    font=("Arial", max(8, int(10 * self.scale)), "bold"),
+                    anchor="center",
+                )
 
     def _create_items(self):
         for item_id, label, slot_id, asset in ITEMS:
@@ -327,6 +358,7 @@ class InventoryUI:
             "slot": slot_id,
             "slot_size": (int(slot_width * SLOT_PADDING_RATIO), int(slot_height * SLOT_PADDING_RATIO)),
             "current_size": size,
+            "asset": asset,
         }
 
         if asset and PIL_AVAILABLE:
@@ -517,6 +549,11 @@ class InventoryUI:
         self.drag_state["x"] = event.x
         self.drag_state["y"] = event.y
 
+    def _notify_drop(self, item_id: str, new_slot: str, previous_slot: str | None = None):
+        slot_name = self.slots.get(new_slot, {}).get("debug_name", new_slot)
+        if callable(self.on_drop):
+            self.on_drop(item_id=item_id, slot_id=new_slot, slot_name=slot_name, previous_slot=previous_slot, asset=self.items[item_id].get("asset"))
+
     def _on_release(self, event):
         item_id = self.drag_state.get("item_id")
         if item_id is None:
@@ -535,6 +572,8 @@ class InventoryUI:
                 self._snap_item_to_slot(item_id, target)
 
         self._resize_item(item_id, 1.0)
+        if target is not None and target != original_slot:
+            self._notify_drop(item_id, self.items[item_id]["slot"], original_slot)
         self.drag_state["item_id"] = None
         self.drag_state["orig_slot"] = None
         self.drag_state["x"] = 0

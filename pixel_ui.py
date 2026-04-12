@@ -570,7 +570,7 @@ def main(debug: bool = False):
     def is_training_video(filename):
         if not filename:
             return False
-        return os.path.splitext(filename)[0].lower().endswith("training")
+        return "training" in os.path.splitext(filename)[0].lower()
 
     def clear_training_result_overlay():
         nonlocal training_result_overlay
@@ -1259,6 +1259,58 @@ def main(debug: bool = False):
             return
         action_overlay.set_transform(action_x.get(), action_y.get(), action_scale.get())
 
+    held_keys = set()
+    train_button_pressed = None
+
+    def press_train_button():
+        nonlocal train_button_pressed
+        if train_button_pressed is not None:
+            return
+        for btn in buttons:
+            if getattr(btn, "label", "") == "TRAIN":
+                btn.on_press(None, play_sound=False)
+                train_button_pressed = btn
+                return
+
+    def release_train_button():
+        nonlocal train_button_pressed
+        if train_button_pressed is None:
+            return
+        train_button_pressed.on_release(None)
+        train_button_pressed = None
+
+    def on_arrow_key(direction):
+        if action_overlay is not None and hasattr(action_overlay, "press_direction"):
+            action_overlay.press_direction(direction)
+            held_keys.add(direction)
+            return
+        if direction == "up":
+            press_train_button()
+            held_keys.add(direction)
+
+    def on_arrow_key_release(direction):
+        if direction not in held_keys:
+            return
+        held_keys.discard(direction)
+        if action_overlay is not None and hasattr(action_overlay, "release_direction"):
+            action_overlay.release_direction(direction)
+            return
+        if direction == "up":
+            release_train_button()
+
+    def on_key_press(event):
+        if event.keysym not in {"Up", "Left", "Down", "Right"}:
+            return
+        direction = event.keysym.lower()
+        if direction in held_keys:
+            return
+        on_arrow_key(direction)
+
+    def on_key_release(event):
+        if event.keysym not in {"Up", "Left", "Down", "Right"}:
+            return
+        on_arrow_key_release(event.keysym.lower())
+
     def rebuild_inventory():
         nonlocal inventory_frame, inventory_view, inventory_state
         if InventoryUI is None:
@@ -1282,12 +1334,25 @@ def main(debug: bool = False):
             inventory_frame = None
             inventory_view = None
 
+        def on_inventory_drop(item_id, slot_id, slot_name, previous_slot, asset):
+            video_map = {
+                ("item_pants_cats", "legs"): "2_gatos_green_r_4.mp4",
+                ("item_tshirt_pink", "chest"): "3_madriders_green_r_4.mp4",
+                ("item_egg_protector", "waist"): "4_egg_green_r_4.mp4",
+            }
+            video = video_map.get((item_id, slot_name.lower()))
+            if video:
+                claucho_selected.set(video)
+                load_claucho_video(video)
+
         inventory_view = InventoryUI(
             inventory_frame,
+            debug=debug,
             embedded=True,
             scale=scale,
             item_state=inventory_state,
             on_close=close_inventory,
+            on_drop=on_inventory_drop,
         )
         inventory_frame.update_idletasks()
         inventory_frame.place_configure(width=inventory_view.width, height=inventory_view.height)
@@ -1605,6 +1670,8 @@ def main(debug: bool = False):
     #     pady=5,
     # ).grid(row=0, column=1, padx=10)
 
+    root.bind_all("<KeyPress>", on_key_press)
+    root.bind_all("<KeyRelease>", on_key_release)
     root.mainloop()
 
 
