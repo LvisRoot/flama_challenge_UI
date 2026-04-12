@@ -1152,6 +1152,14 @@ def main(debug: bool = False):
 
     money_amount.trace_add("write", lambda *args: update_money_layout())
 
+    def adjust_money(delta: int):
+        try:
+            current = int(money_amount.get())
+        except ValueError:
+            current = 0
+        money_amount.set(str(current + delta))
+        update_money_layout()
+
     def flash_money_error():
         nonlocal money_flash_after_id
         if money_text_item is None:
@@ -1401,6 +1409,13 @@ def main(debug: bool = False):
         if selection_overlay is not None:
             selection_overlay.lift()
             return
+
+        def on_selection_result():
+            if title == "Join Club":
+                adjust_money(-2)
+            elif title == "Shop":
+                adjust_money(-10)
+
         selection_overlay = SelectionMenuUI(
             root,
             asset_dir,
@@ -1411,6 +1426,7 @@ def main(debug: bool = False):
             scale=SELECTION_OVERLAY_INITIAL_SCALE,
             on_close=clear_selection,
             on_error=flash_money_error if title == "Shop" else None,
+            on_result=on_selection_result,
         )
 
     def on_button_click(label: str):
@@ -1427,6 +1443,13 @@ def main(debug: bool = False):
             open_selection(os.path.join(os.path.dirname(__file__), "assets", "images", "clubs"), "Join Club")
             return
         if label == "BUY GEAR":
+            nonlocal overlays_visible
+            overlays_visible = True
+            if gif_item is not None:
+                canvas.itemconfigure(gif_item, state="normal")
+            if josuncio_item is not None:
+                canvas.itemconfigure(josuncio_item, state="normal")
+            start_gif_animation()
             open_selection(os.path.join(os.path.dirname(__file__), "assets", "images", "shop"), "Shop")
             return
         print(f"Clicked {label}")

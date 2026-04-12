@@ -6,8 +6,9 @@ from sound_player import play_click_sound, play_error_sound, play_result_sound
 
 
 class SelectionMenuUI:
-    def __init__(self, master, asset_dir, title, embedded=False, x=120, y=120, scale=1.0, on_close=None, on_error=None):
+    def __init__(self, master, asset_dir, title, embedded=False, x=120, y=120, scale=1.0, on_close=None, on_error=None, on_result=None):
         self.on_error = on_error
+        self.on_result = on_result
         self.master = master
         self.asset_dir = asset_dir
         self.title = title
@@ -288,6 +289,8 @@ class SelectionMenuUI:
         self.result_item = self.canvas.create_image(result_width // 2, result_height // 2, image=self.result_photo, anchor="center")
         self.draw_close_button(result_width)
         self.canvas.tag_bind(self.result_item, "<Button-1>", self.on_result_click)
+        if callable(self.on_result):
+            self.on_result()
 
     def show_result(self):
         if self.result_image is None:
@@ -311,6 +314,8 @@ class SelectionMenuUI:
         self.result_item = self.canvas.create_image(result_width // 2, result_height // 2, image=self.result_photo, anchor="center")
         self.draw_close_button(result_width)
         self.canvas.tag_bind(self.result_item, "<Button-1>", self.on_result_click)
+        if callable(self.on_result):
+            self.on_result()
 
     def on_result_click(self, event):
         if event.x >= self.canvas.winfo_width() - 80 and event.y <= 80:
