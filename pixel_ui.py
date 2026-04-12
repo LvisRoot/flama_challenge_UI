@@ -575,8 +575,9 @@ def main(debug: bool = False):
     def clear_training_result_overlay():
         nonlocal training_result_overlay
         if training_result_overlay is not None:
-            training_result_overlay.close()
+            overlay = training_result_overlay
             training_result_overlay = None
+            overlay.close()
 
     def show_training_result_overlay():
         nonlocal training_result_overlay
